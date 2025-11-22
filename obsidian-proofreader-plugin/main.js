@@ -33,6 +33,23 @@ module.exports = class ProofreadPlugin extends Plugin {
       this.app.workspace.on("active-leaf-change", () => this.addProofButton())
     );
     this.addProofButton();
+
+    // エディタのコンテキストメニューに「選択範囲を校正」を追加
+    this.registerEvent(
+      this.app.workspace.on("editor-menu", (menu, editor, view) => {
+        // 選択範囲がある場合のみメニュー項目を追加
+        if (editor.somethingSelected()) {
+          menu.addItem((item) => {
+            item
+              .setTitle("選択範囲を校正")
+              .setIcon("pencil")
+              .onClick(async () => {
+                await this.proofreadSelection(editor);
+              });
+          });
+        }
+      })
+    );
   }
 
   async initClaudePath() {
@@ -77,6 +94,27 @@ module.exports = class ProofreadPlugin extends Plugin {
     console.log("Nodeパス:", this.nodePath);
     console.log("Claude CLIパス:", this.claudeJsPath);
     console.log("モデル名:", this.modelName);
+  }
+
+  async proofreadSelection(editor) {
+    const selectedText = editor.getSelection();
+    if (!selectedText) {
+      new Notice("テキストが選択されていません");
+      return;
+    }
+
+    // 通知を表示
+    new Notice("選択範囲を校正中...");
+
+    try {
+      const result = await this.runClaudeProofread(selectedText);
+      // 選択範囲を校正結果で置き換え
+      editor.replaceSelection(result);
+      new Notice("選択範囲の校正完了！");
+    } catch (err) {
+      console.error(err);
+      new Notice("エラー: " + (err?.message || String(err)));
+    }
   }
 
   addProofButton() {
