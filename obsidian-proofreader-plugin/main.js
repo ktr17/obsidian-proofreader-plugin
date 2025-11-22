@@ -37,28 +37,42 @@ module.exports = class ProofreadPlugin extends Plugin {
 
   async initClaudePath() {
     // .envファイルのパスを取得（プラグインディレクトリ内）
-    const envPath = path.join(__dirname, ".env");
-    const env = loadEnv(envPath);
+    // Obsidianプラグインでは__dirnameは使えないので、this.manifestを使用
+    const basePath = this.app.vault.adapter.basePath;
+    const pluginDir =
+      this.manifest.dir ||
+      path.join(this.app.vault.configDir, "plugins", this.manifest.id);
 
-    // .envから環境変数を読み込む（存在しない場合はデフォルト値を使用）
-    this.nodePath = env.NODE_PATH;
-    this.claudeJsPath = env.CLAUDE_JS;
-    this.modelName = env.MODEL_NAME;
+    // 相対パスの場合は絶対パスに変換
+    const absolutePluginDir = path.isAbsolute(pluginDir)
+      ? pluginDir
+      : path.join(basePath, pluginDir);
+
+    const envPath = path.join(absolutePluginDir, ".env");
+
+    console.log("Vaultベースパス:", basePath);
+    console.log("プラグインディレクトリ（相対）:", pluginDir);
+    console.log("プラグインディレクトリ（絶対）:", absolutePluginDir);
+    console.log(".envパス:", envPath);
+    console.log(".envファイル存在確認:", fs.existsSync(envPath));
+
+    const env = loadEnv(envPath);
+    console.log("読み込まれた環境変数:", env);
 
     const platform = os.platform();
 
-    // プラットフォーム別のデフォルト値（.envに設定がない場合）
-    if (!env.NODE_PATH || !env.CLAUDE_JS) {
-      if (platform === "win32") {
-        this.nodePath = env.NODE_PATH || "node";
-        this.claudeJsPath =
-          env.CLAUDE_JS ||
-          "C:\\Users\\admin\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js";
-      } else if (platform === "linux") {
-        this.nodePath = env.NODE_PATH || "node";
-        this.claudeJsPath = env.CLAUDE_JS || "claude";
-      }
+    if (platform === "win32") {
+      defaultNodePath = "node";
+      defaultClaudeJsPath =
+        "C:\\Users\\admin\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js";
+    } else if (platform === "linux") {
+      defaultNodePath = "node";
+      defaultClaudeJsPath = "claude";
     }
+
+    this.nodePath = env.NODE_PATH;
+    this.claudeJsPath = env.CLAUDE_JS;
+    this.modelName = env.MODEL_NAME;
 
     console.log("Nodeパス:", this.nodePath);
     console.log("Claude CLIパス:", this.claudeJsPath);
