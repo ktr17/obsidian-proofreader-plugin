@@ -1,140 +1,190 @@
 const { Plugin, Notice, MarkdownView } = require("obsidian");
 const { exec } = require("child_process");
+const os = require("os");
+const fs = require("fs");
+const path = require("path");
 
-const CLAUDE_PATH = `"C:\\Users\\admin\\AppData\\Roaming\\npm\\claude.cmd"`;
-const MODEL_NAME = "claude-sonnet-4-5-20250929";
+// .envファイルを読み込む関数
+function loadEnv(envPath) {
+  const env = {};
+  if (fs.existsSync(envPath)) {
+    const content = fs.readFileSync(envPath, "utf8");
+    content.split("\n").forEach((line) => {
+      line = line.trim();
+      // コメント行と空行をスキップ
+      if (!line || line.startsWith("#")) return;
+      const [key, ...valueParts] = line.split("=");
+      if (key && valueParts.length > 0) {
+        env[key.trim()] = valueParts.join("=").trim();
+      }
+    });
+  }
+  return env;
+}
 
 module.exports = class ProofreadPlugin extends Plugin {
-	async onload() {
-		console.log("Claude Code校正プラグイン（非同期対応）読み込み完了");
-		this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.addProofButton()));
-		this.addProofButton();
-	}
+  async onload() {
+    console.log("Claude Code校正プラグイン（非同期対応）読み込み完了");
 
-	addProofButton() {
-		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-		if (!view) return;
-		const toolbar = view.containerEl.querySelector(".view-header");
-		if (!toolbar) return;
+    // ここではもう PATH の取得は不要。node と cli.js を直接叩く。
+    await this.initClaudePath();
 
-		// 重複防止
-		const oldBtn = toolbar.querySelector(".proofread-button");
-		if (oldBtn) oldBtn.remove();
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", () => this.addProofButton())
+    );
+    this.addProofButton();
+  }
 
-		const btn = document.createElement("button");
-		btn.className = "proofread-button";
-		btn.textContent = "校正";
-		Object.assign(btn.style, {
-			marginLeft: "8px",
-			background: "var(--interactive-accent)",
-			color: "white",
-			border: "none",
-			borderRadius: "4px",
-			padding: "4px 8px",
-			cursor: "pointer",
-			transition: "opacity 0.3s ease"
-		});
+  async initClaudePath() {
+    // .envファイルのパスを取得（プラグインディレクトリ内）
+    const envPath = path.join(__dirname, ".env");
+    const env = loadEnv(envPath);
 
-		btn.addEventListener("click", async () => {
-			const editor = view.editor;
-			if (!editor) return new Notice("エディタが見つかりません");
+    // .envから環境変数を読み込む（存在しない場合はデフォルト値を使用）
+    this.nodePath = env.NODE_PATH;
+    this.claudeJsPath = env.CLAUDE_JS;
+    this.modelName = env.MODEL_NAME;
 
-			const text = editor.getValue();
-			const fileName = view.file?.name || "未保存ノート";
+    const platform = os.platform();
 
-			// 🔹 UI即更新
-			btn.disabled = true;
-			btn.style.opacity = "0.6";
-			const originalText = btn.textContent;
-			btn.textContent = "校正中…";
-			new Notice("Claude Codeで校正中...");
+    // プラットフォーム別のデフォルト値（.envに設定がない場合）
+    if (!env.NODE_PATH || !env.CLAUDE_JS) {
+      if (platform === "win32") {
+        this.nodePath = env.NODE_PATH || "node";
+        this.claudeJsPath =
+          env.CLAUDE_JS ||
+          "C:\\Users\\admin\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js";
+      } else if (platform === "linux") {
+        this.nodePath = env.NODE_PATH || "node";
+        this.claudeJsPath = env.CLAUDE_JS || "claude";
+      }
+    }
 
-			try {
-				const result = await this.runClaudeProofread(fileName, text);
-				editor.setValue(result);
-				new Notice("校正完了！");
-			} catch (err) {
-				console.error(err);
-				new Notice("エラー: " + (err?.message || String(err)));
-			} finally {
-				btn.disabled = false;
-				btn.style.opacity = "1";
-				btn.textContent = originalText;
-			}
-		});
+    console.log("Nodeパス:", this.nodePath);
+    console.log("Claude CLIパス:", this.claudeJsPath);
+    console.log("モデル名:", this.modelName);
+  }
 
-		toolbar.appendChild(btn);
-	}
+  addProofButton() {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!view) return;
+    const toolbar = view.containerEl.querySelector(".view-header");
+    if (!toolbar) return;
 
-	async runClaudeProofread(fileName, text) {
-		const prompt = `
-対象テキストは、音声入力で作成された台本です。以下のルールに従って校正してください。
-結果以外の文章は出力しないでください。対象テキストの校正結果のみを出力してください。
-## 修正の方針
+    // 重複防止
+    const oldBtn = toolbar.querySelector(".proofread-button");
+    if (oldBtn) oldBtn.remove();
 
-### 1. 誤字脱字の修正
-音声入力特有の誤変換を修正してください。
+    const btn = document.createElement("button");
+    btn.className = "proofread-button";
+    btn.textContent = "校正";
+    Object.assign(btn.style, {
+      marginLeft: "8px",
+      background: "var(--interactive-accent)",
+      color: "white",
+      border: "none",
+      borderRadius: "4px",
+      padding: "4px 8px",
+      cursor: "pointer",
+      transition: "opacity 0.3s ease",
+    });
 
-例：
-- 「プログラミングの基礎をご照会します」→「プログラミングの基礎をご紹介します」
-- 「このツールを仕様して開発を進めます」→「このツールを使用して開発を進めます」
-- 「データベースにアクセス強方法を説明します」→「データベースにアクセスする方法を説明します」
-- 「機能をカスタマイズで切ます」→「機能をカスタマイズできます」
+    btn.addEventListener("click", async () => {
+      const editor = view.editor;
+      if (!editor) return new Notice("エディタが見つかりません");
 
-### 2. 口語的過ぎる言い回しを書き言葉に
-話し言葉特有の冗長な表現や、「〜なんか」「〜とか」「〜みたいな」などのカジュアル表現を、  
-自然な書き言葉に直してください。  
-ただし、**リズムや文体を極力維持し、ニュアンスを壊さないように**してください。
+      const text = editor.getValue();
 
-例：
-- 「なんかその、すごく大事な話なんですけど」→「とても大事な話ですが」  
-- 「このへんが、まあ、ポイントかなと思います」→「このあたりがポイントだと思います」  
-- 「〜していく感じになります」→「〜していきます」  
-- 「〜とか〜とかができるようになります」→「〜や〜ができるようになります」  
+      // UI 即時更新
+      btn.disabled = true;
+      btn.style.opacity = "0.6";
+      const originalText = btn.textContent;
+      btn.textContent = "校正中…";
+      new Notice("Claude Codeで校正中...");
 
-### 3. 文の意味や語調を変えない
-- 表現を整えても、**話し手の意図・トーン・感情は維持**してください。  
-- 文体（です／ます調 or である調）は統一せず、**原文のスタイルを尊重**してください。  
-- 不必要な言い換え・意訳・要約は行わないでください。  
+      try {
+        const result = await this.runClaudeProofread(text);
+        editor.setValue(result);
+        new Notice("校正完了！");
+      } catch (err) {
+        console.error(err);
+        new Notice("エラー: " + (err?.message || String(err)));
+      } finally {
+        btn.disabled = false;
+        btn.style.opacity = "1";
+        btn.textContent = originalText;
+      }
+    });
 
-例：
-- ❌ 「少し難しいですが頑張っていきましょう」→「努力が必要です」  
-　→ 意味が変わってしまうため修正しない。  
-- ✅ 「少し難しいですが頑張っていきましょう」→「少し難しいですが、頑張っていきましょう」  
-　→ 読点や自然な助詞の補完はOK。
+    toolbar.appendChild(btn);
+  }
 
-### 4. 文法・句読点・助詞の微修正
-- 「てにをは」など助詞の誤用を自然に直す  
-- 不足している読点（、）を補う  
-- 不要な重複表現を取り除く  
+  async runClaudeProofread(text) {
+    const prompt = `
+      対象テキストは、音声入力で行った読書メモです。以下のルールに従って校正してください。
+      結果以外の文章は出力しないでください。対象テキストの校正結果のみを出力してください。
+      ## 修正の方針
 
-例：
-- 「私が行ったところが、行った場所が、とても綺麗でした」→「私が行った場所はとても綺麗でした」  
-- 「この仕組みは理解しやすい仕組みです」→「この仕組みは理解しやすいです」  
+      ### 1. 誤字脱字の修正
+      音声入力特有の誤変換を修正してください。
+      本の内容を読み取り、誤字を推測して適切に直してください。
 
-### 5. 修正は最小限に
-- **「人が軽く校正した程度」にとどめる**。  
-- 大幅な言い換え・構成変更・要約は禁止。  
-- 一文の構造を変えず、誤字・助詞・語尾・言い回しのみを調整。  
+      例：
+      - 「プログラミングの基礎をご照会します」→「プログラミングの基礎をご紹介します」
+      - 「このツールを仕様して開発を進めます」→「このツールを使用して開発を進めます」
+      - 「データベースにアクセス強方法を説明します」→「データベースにアクセスする方法を説明します」
+      - 「機能をカスタマイズで切ます」→「機能をカスタマイズできます」
 
-### 6. 出力ルール
-- 出力は**校正後の本文のみ**。  
-- 校正説明・メタコメント・「修正しました」などは出力しない。  
-- 空行・段落構成は原文を維持。
+      ### 2. 小見出しの作成
+      メモ書きの区切りはページ番号で行っています。
+      メモ書きの区切りの単位で「##」を用いて小見出しを作成してください。
 
----
-対象テキスト：
-${text}
-`.trim();
 
-		const cmd = `${CLAUDE_PATH} --model ${MODEL_NAME}`;
-		return new Promise((resolve, reject) => {
-			const child = exec(cmd, { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
-				if (error) return reject(new Error("Claude Code 実行エラー: " + stderr || error.message));
-				resolve(stdout.trim());
-			});
-			child.stdin.write(prompt);
-			child.stdin.end();
-		});
-	}
+      ### 3. 本から得た事実と自分の意見を明確に
+      本から得た事実と自分の意見が書かれている。自分の意見には文頭に「💡」を付与しています。そこから改行までが意見を指しています。
+      そのため、意見には「💡」マークをそのまま残して明確にしたい。
+
+      ### 4. 口語的過ぎる言い回しを書き言葉に
+      話し言葉特有の冗長な表現や、「〜なんか」「〜とか」「〜みたいな」などのカジュアル表現を、
+      自然な書き言葉に直してください。
+      ただし、**リズムや文体を極力維持し、ニュアンスを壊さないように**してください。
+
+      ### 5. 文の意味や語調を変えない
+      文体や語調は原文を尊重し、不必要な意訳は行わないこと。
+
+      ### 6. 文法・句読点・助詞の微修正
+      助詞の誤用、読点の補完、重複表現の整理など。
+
+      ### 7. 修正は最小限に
+      大幅な意訳は禁止。「人が軽く校正した程度」にとどめる。
+
+      ### 8. 出力ルール
+      本文のみ出力。空行・段落は維持。
+      ページ番号は削除しないでください。
+
+      ---
+      対象テキスト：
+      ${text}
+      `.trim();
+
+    return new Promise((resolve, reject) => {
+      // ★ node で cli.js を叩く（最も安定）
+      const command = `${this.nodePath} ${this.claudeJsPath} --model ${this.modelName}`;
+
+      const child = exec(
+        command,
+        { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+        (error, stdout, stderr) => {
+          if (error)
+            return reject(
+              new Error("Claude Code 実行エラー: " + (stderr || error.message))
+            );
+          resolve(stdout.trim());
+        }
+      );
+
+      child.stdin.write(prompt);
+      child.stdin.end();
+    });
+  }
 };
